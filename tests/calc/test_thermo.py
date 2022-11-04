@@ -10,7 +10,7 @@ import pytest
 import xarray as xr
 
 from metpy.calc import (brunt_vaisala_frequency, brunt_vaisala_frequency_squared,
-                        brunt_vaisala_period, cape_cin, cross_totals, density, dewpoint,
+                        brunt_vaisala_period, cape_cin, ccl, cross_totals, density, dewpoint,
                         dewpoint_from_relative_humidity, dewpoint_from_specific_humidity,
                         dry_lapse, dry_static_energy, el, equivalent_potential_temperature,
                         exner_function, gradient_richardson_number, InvalidSoundingError,
@@ -35,7 +35,7 @@ from metpy.calc import (brunt_vaisala_frequency, brunt_vaisala_frequency_squared
                         virtual_temperature, wet_bulb_temperature)
 from metpy.calc.thermo import _find_append_zero_crossings
 from metpy.testing import assert_almost_equal, assert_array_almost_equal, assert_nan
-from metpy.units import masked_array, units
+from metpy.units import is_quantity, masked_array, units
 
 
 def test_relative_humidity_from_dewpoint():
@@ -399,6 +399,129 @@ def test_lcl_nans():
                                                   np.nan, 18.82281982535794]) * units.degC)
 
 
+def test_ccl_basic():
+    """First test of CCL calculation. Data: ILX, June 17 2022 00Z."""
+    pressure = np.array([993.0, 984.0, 957.0, 948.0, 925.0, 917.0, 886.0, 868.0, 850.0,
+                         841.0, 813.0, 806.0, 798.0, 738.0, 732.0, 723.0, 716.0, 711.0,
+                         700.0, 623.0, 621.0, 582.0, 541.0, 500.0, 468.0]) * units.mbar
+    temperature = np.array([34.6, 33.7, 31.1, 30.1, 27.8, 27.1, 24.3, 22.6, 21.4,
+                            20.8, 19.6, 19.4, 18.7, 13.0, 13.0, 13.4, 13.5, 13.6,
+                            13.0, 5.2, 5.0, 1.5, -2.4, -6.7, -10.7]) * units.degC
+    dewpoint = np.array([19.6, 19.4, 18.7, 18.4, 17.8, 17.5, 16.3, 15.6, 12.4, 10.8,
+                         -0.4, -3.6, -3.8, -5.0, -6.0, -15.6, -13.2, -11.4, -11.0,
+                         -5.8, -6.2, -14.8, -24.3, -34.7, -38.1]) * units.degC
+    ccl_p, ccl_t, t_c = ccl(pressure, temperature, dewpoint)
+    assert_almost_equal(ccl_p, 763.006048 * units.mbar, 5)
+    assert_almost_equal(ccl_t, 15.429946 * units.degC, 5)
+    assert_almost_equal(t_c, 37.991498 * units.degC, 5)
+
+
+def test_ccl_nans():
+    """Tests CCL handles nans."""
+    pressure = np.array([993.0, 984.0, 957.0, np.nan, 925.0, 917.0, np.nan, 868.0, 850.0,
+                         841.0, 813.0, 806.0, 798.0, 738.0, 732.0, 723.0, 716.0, 711.0,
+                         700.0, 623.0, 621.0, 582.0, 541.0, 500.0, 468.0]) * units.mbar
+    temperature = np.array([34.6, np.nan, 31.1, np.nan, 27.8, 27.1, 24.3, 22.6, 21.4,
+                            20.8, 19.6, 19.4, 18.7, 13.0, 13.0, 13.4, 13.5, 13.6,
+                            13.0, 5.2, 5.0, 1.5, -2.4, -6.7, -10.7]) * units.degC
+    dewpoint = np.array([19.6, 19.4, 18.7, np.nan, 17.8, 17.5, 16.3, 15.6, 12.4, 10.8,
+                         -0.4, -3.6, -3.8, -5.0, -6.0, -15.6, -13.2, -11.4, -11.0,
+                         -5.8, -6.2, -14.8, -24.3, -34.7, -38.1]) * units.degC
+    ccl_p, ccl_t, t_c = ccl(pressure, temperature, dewpoint)
+    assert_almost_equal(ccl_p, 763.006048 * units.mbar, 5)
+    assert_almost_equal(ccl_t, 15.429946 * units.degC, 5)
+    assert_almost_equal(t_c, 37.991498 * units.degC, 5)
+
+
+def test_ccl_unit():
+    """Tests CCL pressure and temperature is returned in the correct unit."""
+    pressure = (np.array([993.0, 984.0, 957.0, 948.0, 925.0, 917.0, 886.0, 868.0, 850.0,
+                         841.0, 813.0, 806.0, 798.0, 738.0, 732.0, 723.0, 716.0, 711.0,
+                         700.0, 623.0, 621.0, 582.0, 541.0, 500.0, 468.0]) * 100) * units.Pa
+    temperature = (np.array([34.6, 33.7, 31.1, 30.1, 27.8, 27.1, 24.3, 22.6, 21.4,
+                             20.8, 19.6, 19.4, 18.7, 13.0, 13.0, 13.4, 13.5, 13.6,
+                             13.0, 5.2, 5.0, 1.5, -2.4, -6.7, -10.7]) + 273.15) * units.kelvin
+    dewpoint = (np.array([19.6, 19.4, 18.7, 18.4, 17.8, 17.5, 16.3, 15.6, 12.4, 10.8,
+                          -0.4, -3.6, -3.8, -5.0, -6.0, -15.6, -13.2, -11.4, -11.0,
+                          -5.8, -6.2, -14.8, -24.3, -34.7, -38.1]) + 273.15) * units.kelvin
+
+    ccl_p, ccl_t, t_c = ccl(pressure, temperature, dewpoint)
+    assert_almost_equal(ccl_p, (763.006048 * 100) * units.Pa, 3)
+    assert_almost_equal(ccl_t, (15.429946 + 273.15) * units.kelvin, 3)
+    assert_almost_equal(t_c, (37.991498 + 273.15) * units.kelvin, 3)
+
+    assert ccl_p.units == pressure.units
+    assert ccl_t.units == temperature.units
+    assert t_c.units == temperature.units
+
+
+def test_multiple_ccl():
+    """Tests the case where there are multiple CCLs. Data: BUF, May 18 2022 12Z."""
+    pressure = np.array([992.0, 990.0, 983.0, 967.0, 950.0, 944.0, 928.0, 925.0, 922.0,
+                         883.0, 877.7, 858.0, 853.0, 850.0, 835.0, 830.0, 827.0, 826.0,
+                         813.6, 808.0, 799.0, 784.0, 783.3, 769.0, 760.0, 758.0, 754.0,
+                         753.0, 738.0, 725.7, 711.0, 704.0, 700.0, 685.0, 672.0, 646.6,
+                         598.6, 596.0, 587.0, 582.0, 567.0, 560.0, 555.0, 553.3, 537.0,
+                         526.0, 521.0, 519.0, 515.0, 500.0]) * units.mbar
+    temperature = np.array([6.8, 6.2, 7.8, 7.6, 7.2, 7.6, 6.6, 6.4, 6.2, 3.2, 2.8, 1.2,
+                            1.0, 0.8, -0.3, -0.1, 0.4, 0.6, 0.9, 1.0, 0.6, -0.3, -0.3,
+                            -0.7, -1.5, -1.3, 0.2, 0.2, -1.1, -2.1, -3.3, -2.3, -1.7, 0.2,
+                            -0.9, -3.0, -7.3, -7.5, -8.1, -8.3, -9.5, -10.1, -10.7,
+                            -10.8, -12.1, -12.5, -12.7, -12.9, -13.5, -15.5]) * units.degC
+    dewpoint = np.array([5.1, 5.0, 4.2, 2.7, 2.2, 0.6, -2.4, -2.6, -2.8, -3.8, -3.6,
+                        -3.1, -5.0, -4.2, -1.8, -4.3, -7.6, -6.4, -8.2, -9.0, -10.4,
+                        -9.3, -9.6, -14.7, -11.5, -12.3, -25.8, -25.8, -19.1, -19.6,
+                        -20.3, -42.3, -39.7, -46.8, -46.8, -46.7, -46.5, -46.5,
+                        -52.1, -36.3, -47.5, -30.1, -29.7, -30.4, -37.1, -49.5,
+                        -36.7, -28.9, -28.5, -22.5]) * units.degC
+
+    ccl_p, ccl_t, t_c = ccl(pressure, temperature, dewpoint)
+    assert_almost_equal(ccl_p, 680.191653 * units.mbar, 5)
+    assert_almost_equal(ccl_t, -0.204408 * units.degC, 5)
+    assert_almost_equal(t_c, 30.8678258 * units.degC, 5)
+
+    ccl_p, ccl_t, t_c = ccl(pressure, temperature, dewpoint, which='bottom')
+    assert_almost_equal(ccl_p, 886.835325 * units.mbar, 5)
+    assert_almost_equal(ccl_t, 3.500840 * units.degC, 5)
+    assert_almost_equal(t_c, 12.5020423 * units.degC, 5)
+
+    ccl_p, ccl_t, t_c = ccl(pressure, temperature, dewpoint, which='all')
+    assert_array_almost_equal(ccl_p, np.array([886.835325, 680.191653]) * units.mbar, 5)
+    assert_array_almost_equal(ccl_t, np.array([3.500840, -0.204408]) * units.degC, 5)
+    assert_array_almost_equal(t_c, np.array([12.5020423, 30.8678258]) * units.degC, 5)
+
+
+def test_ccl_with_ml():
+    """Test CCL calculation with a specified mixed-layer depth."""
+    pressure = np.array([992.0, 990.0, 983.0, 967.0, 950.0, 944.0, 928.0, 925.0, 922.0,
+                         883.0, 877.7, 858.0, 853.0, 850.0, 835.0, 830.0, 827.0, 826.0,
+                         813.6, 808.0, 799.0, 784.0, 783.3, 769.0, 760.0, 758.0, 754.0,
+                         753.0, 738.0, 725.7, 711.0, 704.0, 700.0, 685.0, 672.0, 646.6,
+                         598.6, 596.0, 587.0, 582.0, 567.0, 560.0, 555.0, 553.3, 537.0,
+                         526.0, 521.0, 519.0, 515.0, 500.0]) * units.mbar
+    temperature = np.array([6.8, 6.2, 7.8, 7.6, 7.2, 7.6, 6.6, 6.4, 6.2, 3.2, 2.8, 1.2,
+                            1.0, 0.8, -0.3, -0.1, 0.4, 0.6, 0.9, 1.0, 0.6, -0.3, -0.3,
+                            -0.7, -1.5, -1.3, 0.2, 0.2, -1.1, -2.1, -3.3, -2.3, -1.7, 0.2,
+                            -0.9, -3.0, -7.3, -7.5, -8.1, -8.3, -9.5, -10.1, -10.7,
+                            -10.8, -12.1, -12.5, -12.7, -12.9, -13.5, -15.5]) * units.degC
+    dewpoint = np.array([5.1, 5.0, 4.2, 2.7, 2.2, 0.6, -2.4, -2.6, -2.8, -3.8, -3.6,
+                        -3.1, -5.0, -4.2, -1.8, -4.3, -7.6, -6.4, -8.2, -9.0, -10.4,
+                        -9.3, -9.6, -14.7, -11.5, -12.3, -25.8, -25.8, -19.1, -19.6,
+                        -20.3, -42.3, -39.7, -46.8, -46.8, -46.7, -46.5, -46.5,
+                        -52.1, -36.3, -47.5, -30.1, -29.7, -30.4, -37.1, -49.5,
+                        -36.7, -28.9, -28.5, -22.5]) * units.degC
+
+    ccl_p, ccl_t, t_c = ccl(pressure, temperature, dewpoint,
+                            mixed_layer_depth=500 * units.m, which='all')
+
+    assert_array_almost_equal(ccl_p, np.array(
+        [850.600930, 784.325312, 737.767377, 648.076147]) * units.mbar, 5)
+    assert_array_almost_equal(ccl_t, np.array(
+        [0.840118, -0.280299, -1.118757, -2.875716]) * units.degC, 5)
+    assert_array_almost_equal(t_c, np.array(
+        [13.146845, 18.661621, 22.896152, 32.081388]) * units.degC, 5)
+
+
 def test_lfc_basic():
     """Test LFC calculation."""
     levels = np.array([959., 779.2, 751.3, 724.3, 700., 269.]) * units.mbar
@@ -632,7 +755,7 @@ def test_equivalent_potential_temperature_masked():
         np.ma.array([311.18586, 313.51781, 315.93971], mask=[False, True, False]),
         units.kelvin
     )
-    assert isinstance(ept, units.Quantity)
+    assert is_quantity(ept)
     assert isinstance(ept.m, np.ma.MaskedArray)
     assert_array_almost_equal(ept, expected, 3)
 
@@ -656,7 +779,7 @@ def test_saturation_equivalent_potential_temperature_masked():
         np.ma.array([335.02750, 338.95813, 343.08740]),
         units.kelvin
     )
-    assert isinstance(s_ept, units.Quantity)
+    assert is_quantity(s_ept)
     assert isinstance(s_ept.m, np.ma.MaskedArray)
     assert_array_almost_equal(s_ept, expected, 3)
 
@@ -1894,6 +2017,40 @@ def test_lcl_grid_surface_lcls():
     assert_array_almost_equal(lcl_temperature, temp_truth, 4)
 
 
+@pytest.fixture()
+def index_xarray_data():
+    """Create data for testing that index calculations work with xarray data."""
+    pressure = xr.DataArray([850., 700., 500.], dims=('isobaric',), attrs={'units': 'hPa'})
+    temp = xr.DataArray([[[[296., 295., 294.], [293., 292., 291.]],
+                          [[286., 285., 284.], [283., 282., 281.]],
+                          [[276., 275., 274.], [273., 272., 271.]]]] * units.K,
+                        dims=('time', 'isobaric', 'y', 'x'))
+
+    profile = xr.DataArray([[[[289., 288., 287.], [286., 285., 284.]],
+                             [[279., 278., 277.], [276., 275., 274.]],
+                             [[269., 268., 267.], [266., 265., 264.]]]] * units.K,
+                           dims=('time', 'isobaric', 'y', 'x'))
+
+    dewp = xr.DataArray([[[[294., 293., 292.], [291., 290., 289.]],
+                          [[284., 283., 282.], [281., 280., 279.]],
+                          [[274., 273., 272.], [271., 270., 269.]]]] * units.K,
+                        dims=('time', 'isobaric', 'y', 'x'))
+
+    dirw = xr.DataArray([[[[180., 180., 180.], [180., 180., 180.]],
+                          [[225., 225., 225.], [225., 225., 225.]],
+                          [[270., 270., 270.], [270., 270., 270.]]]] * units.degree,
+                        dims=('time', 'isobaric', 'y', 'x'))
+
+    speed = xr.DataArray([[[[20., 20., 20.], [20., 20., 20.]],
+                           [[25., 25., 25.], [25., 25., 25.]],
+                           [[50., 50., 50.], [50., 50., 50.]]]] * units.knots,
+                         dims=('time', 'isobaric', 'y', 'x'))
+
+    return xr.Dataset({'temperature': temp, 'profile': profile, 'dewpoint': dewp,
+                       'wind_direction': dirw, 'wind_speed': speed},
+                      coords={'isobaric': pressure, 'time': ['2020-01-01T00:00Z']})
+
+
 def test_lifted_index():
     """Test the Lifted Index calculation."""
     pressure = np.array([1014., 1000., 997., 981.2, 947.4, 925., 914.9, 911.,
@@ -1944,6 +2101,13 @@ def test_lifted_index_500hpa_missing():
     assert_almost_equal(li, -7.9176350 * units.delta_degree_Celsius, 1)
 
 
+def test_lifted_index_xarray(index_xarray_data):
+    """Test lifted index with a grid of xarray data."""
+    result = lifted_index(index_xarray_data.isobaric, index_xarray_data.temperature,
+                          index_xarray_data.profile)
+    assert_array_almost_equal(result, np.full((1, 1, 2, 3), 7) * units.delta_degC)
+
+
 def test_k_index():
     """Test the K Index calculation."""
     pressure = np.array([1014., 1000., 997., 981.2, 947.4, 925., 914.9, 911.,
@@ -1966,6 +2130,14 @@ def test_k_index():
                          -57.5]) * units.degC
     ki = k_index(pressure, temperature, dewpoint)
     assert_almost_equal(ki, 33.5 * units.degC, 2)
+
+
+def test_k_index_xarray(index_xarray_data):
+    """Test the K index calculation with a grid of xarray data."""
+    result = k_index(index_xarray_data.isobaric, index_xarray_data.temperature,
+                     index_xarray_data.dewpoint)
+    assert_array_almost_equal(result,
+                              np.array([[[312., 311., 310.], [309., 308., 307.]]]) * units.K)
 
 
 def test_gradient_richardson_number():
@@ -2050,6 +2222,13 @@ def test_total_totals_index():
     assert_almost_equal(tt, 45.10 * units.delta_degC, 2)
 
 
+def test_total_totals_index_xarray(index_xarray_data):
+    """Test the total totals index calculation with a grid of xarray data."""
+    result = total_totals_index(index_xarray_data.isobaric, index_xarray_data.temperature,
+                                index_xarray_data.dewpoint)
+    assert_array_almost_equal(result, np.full((1, 2, 3), 38.) * units.K)
+
+
 def test_vertical_totals():
     """Test the Vertical Totals calculation."""
     pressure = np.array([1008., 1000., 947., 925., 921., 896., 891., 889., 866.,
@@ -2067,6 +2246,12 @@ def test_vertical_totals():
 
     vt = vertical_totals(pressure, temperature)
     assert_almost_equal(vt, 23.70 * units.delta_degC, 2)
+
+
+def test_vertical_totals_index_xarray(index_xarray_data):
+    """Test the vertical totals index calculation with a grid of xarray data."""
+    result = vertical_totals(index_xarray_data.isobaric, index_xarray_data.temperature)
+    assert_array_almost_equal(result, np.full((1, 2, 3), 20.) * units.K)
 
 
 def test_cross_totals():
@@ -2092,6 +2277,13 @@ def test_cross_totals():
 
     ct = cross_totals(pressure, temperature, dewpoint)
     assert_almost_equal(ct, 21.40 * units.delta_degC, 2)
+
+
+def test_cross_totals_index_xarray(index_xarray_data):
+    """Test the cross totals index calculation with a grid of xarray data."""
+    result = cross_totals(index_xarray_data.isobaric, index_xarray_data.temperature,
+                          index_xarray_data.dewpoint)
+    assert_array_almost_equal(result, np.full((1, 2, 3), 18.) * units.K)
 
 
 def test_parcel_profile_drop_duplicates():
@@ -2194,3 +2386,12 @@ def test_sweat_index():
 
     sweat = sweat_index(pressure, temperature, dewpoint, speed, direction)
     assert_almost_equal(sweat, 227., 2)
+
+
+def test_sweat_index_xarray(index_xarray_data):
+    """Test the SWEAT index calculation with a grid of xarray data."""
+    result = sweat_index(index_xarray_data.isobaric, index_xarray_data.temperature,
+                         index_xarray_data.dewpoint, index_xarray_data.wind_speed,
+                         index_xarray_data.wind_direction)
+    assert_array_almost_equal(result, np.array([[[[490.2, 478.2, 466.2],
+                                                  [454.2, 442.2, 430.2]]]]))

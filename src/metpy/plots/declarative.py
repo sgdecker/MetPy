@@ -1405,12 +1405,14 @@ class ContourPlot(PlotScalar, ContourTraits, ValidationMixin):
     line.
     """
 
-    linestyle = Unicode('solid', allow_none=True)
-    linestyle.__doc__ = """A string value to set the linestyle (e.g., dashed); default is
-    solid.
+    linestyle = Unicode(None, allow_none=True)
+    linestyle.__doc__ = """A string value to set the linestyle (e.g., dashed), or `None`;
+    default is `None`, which, when using monochrome line colors, uses solid lines for positive
+    values and dashed lines for negative values.
 
-    The valid string values are those of Matplotlib which are solid, dashed, dotted, and
-    dashdot.
+    The valid string values are those of Matplotlib which are 'solid', 'dashed', 'dotted', and
+    'dashdot', as well as their short codes ('-', '--', '.', '-.'). The object `None`, as
+    described above, can also be used.
     """
 
     @observe('contours', 'linecolor', 'linewidth', 'linestyle', 'clabels', 'label_fontsize')
@@ -1661,7 +1663,7 @@ class BarbPlot(PlotVector, ValidationMixin):
         self.handle = self.parent.ax.barbs(
             x_like[wind_slice], y_like[wind_slice],
             u.values[wind_slice], v.values[wind_slice],
-            color=self.color, pivot=self.pivot, length=self.barblength, **kwargs)
+            color=self.color, pivot=self.pivot, length=self.barblength, zorder=2, **kwargs)
 
 
 @exporter.export

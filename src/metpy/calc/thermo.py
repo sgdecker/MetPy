@@ -475,6 +475,109 @@ def lcl(pressure, temperature, dewpoint, max_iters=50, eps=1e-5):
 
 @exporter.export
 @preprocess_and_wrap()
+@check_units('[pressure]', '[temperature]', '[temperature]')
+def ccl(pressure, temperature, dewpoint, height=None, mixed_layer_depth=None, which='top'):
+    r"""Calculate the convective condensation level (CCL) and convective temperature.
+
+    This function is implemented directly based on the definition of the CCL,
+    as in [USAF1990]_, and finding where the ambient temperature profile intersects
+    the line of constant mixing ratio starting at the surface, using the surface dewpoint
+    or the average dewpoint of a shallow layer near the surface.
+
+    Parameters
+    ----------
+    pressure : `pint.Quantity`
+        Atmospheric pressure profile
+
+    temperature : `pint.Quantity`
+        Temperature at the levels given by `pressure`
+
+    dewpoint : `pint.Quantity`
+        Dewpoint at the levels given by `pressure`
+
+    height : `pint.Quantity`, optional
+        Atmospheric heights at the levels given by `pressure`.
+        Only needed when specifying a mixed layer depth as a height.
+
+    mixed_layer_depth : `pint.Quantity`, optional
+        The thickness of the mixed layer as a pressure or height above the bottom
+        of the layer (default None).
+
+    which: str, optional
+        Pick which CCL value to return; must be one of 'top', 'bottom', or 'all'.
+        'top' returns the lowest-pressure CCL (default),
+        'bottom' returns the highest-pressure CCL,
+        'all' returns every CCL in a `Pint.Quantity` array.
+
+    Returns
+    -------
+    `pint.Quantity`
+        CCL Pressure
+
+    `pint.Quantity`
+        CCL Temperature
+
+    `pint.Quantity`
+        Convective Temperature
+
+    See Also
+    --------
+    lcl, lfc, el
+
+    Notes
+    -----
+    Only functions on 1D profiles (not higher-dimension vertical cross sections or grids).
+    Since this function returns scalar values when given a profile, this will return Pint
+    Quantities even when given xarray DataArray profiles.
+
+    Examples
+    --------
+    >>> import metpy.calc as mpcalc
+    >>> from metpy.units import units
+    >>> pressure = [993, 957, 925, 886, 850, 813, 798, 732, 716, 700] * units.mbar
+    >>> temperature = [34.6, 31.1, 27.8, 24.3, 21.4, 19.6, 18.7, 13, 13.5, 13] * units.degC
+    >>> dewpoint = [19.6, 18.7, 17.8, 16.3, 12.4, -0.4, -3.8, -6, -13.2, -11] * units.degC
+    >>> ccl_p, ccl_t, t_c = mpcalc.ccl(pressure, temperature, dewpoint)
+    >>> ccl_p, t_c
+    (<Quantity(758.348093, 'millibar')>, <Quantity(38.4336274, 'degree_Celsius')>)
+    """
+    pressure, temperature, dewpoint = _remove_nans(pressure, temperature, dewpoint)
+
+    # If the mixed layer is not defined, take the starting dewpoint to be the
+    # first element of the dewpoint array and calculate the corresponding mixing ratio.
+    if mixed_layer_depth is None:
+        p_start, dewpoint_start = pressure[0], dewpoint[0]
+        vapor_pressure_start = saturation_vapor_pressure(dewpoint_start)
+        r_start = mixing_ratio(vapor_pressure_start, p_start)
+
+    # Else, calculate the mixing ratio of the mixed layer.
+    else:
+        vapor_pressure_profile = saturation_vapor_pressure(dewpoint)
+        r_profile = mixing_ratio(vapor_pressure_profile, pressure)
+        r_start = mixed_layer(pressure, r_profile, height=height,
+                              depth=mixed_layer_depth)[0]
+
+    # rt_profile is the temperature-pressure profile with a fixed mixing ratio
+    rt_profile = globals()['dewpoint'](vapor_pressure(pressure, r_start))
+
+    x, y = find_intersections(pressure, rt_profile, temperature,
+                              direction='increasing', log_x=True)
+
+    # In the case of multiple CCLs, select which to return
+    if which == 'top':
+        x, y = x[-1], y[-1]
+    elif which == 'bottom':
+        x, y = x[0], y[0]
+    elif which not in ['top', 'bottom', 'all']:
+        raise ValueError(f'Invalid option for "which": {which}. Valid options are '
+                         '"top", "bottom", and "all".')
+
+    x, y = x.to(pressure.units), y.to(temperature.units)
+    return x, y, dry_lapse(pressure[0], y, x).to(temperature.units)
+
+
+@exporter.export
+@preprocess_and_wrap()
 @check_units('[pressure]', '[temperature]', '[temperature]', '[temperature]')
 def lfc(pressure, temperature, dewpoint, parcel_temperature_profile=None, dewpoint_start=None,
         which='top'):
@@ -1840,7 +1943,7 @@ def mixing_ratio_from_relative_humidity(pressure, temperature, relative_humidity
     temperature: `pint.Quantity`
         Air temperature
 
-    relative_humidity: array_like
+    relative_humidity: array-like
         The relative humidity expressed as a unitless ratio in the range [0, 1]. Can also pass
         a percentage if proper units are attached.
 
@@ -2363,14 +2466,26 @@ def isentropic_interpolation(levels, pressure, temperature, *args, vertical_dim=
 
     Parameters
     ----------
-    levels : array
+    levels : array-like
         One-dimensional array of desired potential temperature surfaces
 
-    pressure : array
+    pressure : array-like
         One-dimensional array of pressure levels
 
-    temperature : array
+    temperature : array-like
         Array of temperature
+
+    args : array-like, optional
+        Any additional variables will be interpolated to each isentropic level.
+
+    Returns
+    -------
+    list
+        List with pressure at each isentropic level, followed by each additional
+        argument interpolated to isentropic coordinates.
+
+    Other Parameters
+    ----------------
     vertical_dim : int, optional
         The axis corresponding to the vertical in the temperature array, defaults to 0.
 
@@ -2385,17 +2500,8 @@ def isentropic_interpolation(levels, pressure, temperature, *args, vertical_dim=
         The desired absolute error in the calculated value, defaults to 1e-6.
 
     bottom_up_search : bool, optional
-        Controls whether to search for levels bottom-up, or top-down. Defaults to
-        True, which is bottom-up search.
-
-    args : array, optional
-        Any additional variables will be interpolated to each isentropic level
-
-    Returns
-    -------
-    list
-        List with pressure at each isentropic level, followed by each additional
-        argument interpolated to isentropic coordinates.
+        Controls whether to search for levels bottom-up (starting at lower indices),
+        or top-down (starting at higher indices). Defaults to True, which is bottom-up search.
 
     See Also
     --------
@@ -2427,14 +2533,11 @@ def isentropic_interpolation(levels, pressure, temperature, *args, vertical_dim=
         fp = exner * (ka * t - a)
         return iter_log_p - (f / fp)
 
-    # Get dimensions in temperature
-    ndim = temperature.ndim
-
     # Convert units
     pressure = pressure.to('hPa')
     temperature = temperature.to('kelvin')
 
-    slices = [np.newaxis] * ndim
+    slices = [np.newaxis] * temperature.ndim
     slices[vertical_dim] = slice(None)
     slices = tuple(slices)
     pressure = units.Quantity(np.broadcast_to(pressure[slices].magnitude, temperature.shape),
@@ -2444,7 +2547,7 @@ def isentropic_interpolation(levels, pressure, temperature, *args, vertical_dim=
     sort_pressure = np.argsort(pressure.m, axis=vertical_dim)
     sort_pressure = np.swapaxes(np.swapaxes(sort_pressure, 0, vertical_dim)[::-1], 0,
                                 vertical_dim)
-    sorter = broadcast_indices(pressure, sort_pressure, ndim, vertical_dim)
+    sorter = broadcast_indices(sort_pressure, temperature.shape, vertical_dim)
     levs = pressure[sorter]
     tmpk = temperature[sorter]
 
@@ -2540,8 +2643,8 @@ def isentropic_interpolation_as_dataset(
     eps : float, optional
         The desired absolute error in the calculated value, defaults to 1e-6.
     bottom_up_search : bool, optional
-        Controls whether to search for levels bottom-up, or top-down. Defaults to
-        True, which is bottom-up search.
+        Controls whether to search for levels bottom-up (starting at lower indices),
+        or top-down (starting at higher indices). Defaults to True, which is bottom-up search.
 
     Returns
     -------
@@ -3862,9 +3965,10 @@ def specific_humidity_from_dewpoint(pressure, dewpoint):
 
 
 @exporter.export
-@preprocess_and_wrap()
+@add_vertical_dim_from_xarray
+@preprocess_and_wrap(broadcast=('pressure', 'temperature', 'parcel_profile'))
 @check_units('[pressure]', '[temperature]', '[temperature]')
-def lifted_index(pressure, temperature, parcel_profile):
+def lifted_index(pressure, temperature, parcel_profile, vertical_dim=0):
     """Calculate Lifted Index from the pressure temperature and parcel profile.
 
     Lifted index formula derived from [Galway1956]_ and referenced by [DoswellSchultz2006]_:
@@ -3891,6 +3995,10 @@ def lifted_index(pressure, temperature, parcel_profile):
 
     parcel_profile : `pint.Quantity`
         Temperature profile of the parcel
+
+    vertical_dim : int, optional
+        The axis corresponding to vertical, defaults to 0. Automatically determined from
+        xarray DataArray arguments.
 
     Returns
     -------
@@ -3926,16 +4034,17 @@ def lifted_index(pressure, temperature, parcel_profile):
     """
     # find the measured temperature and parcel profile temperature at 500 hPa.
     t500, tp500 = interpolate_1d(units.Quantity(500, 'hPa'),
-                                 pressure, temperature, parcel_profile)
+                                 pressure, temperature, parcel_profile, axis=vertical_dim)
 
     # calculate the lifted index.
-    return t500 - tp500.to(units.degC)
+    return t500 - tp500
 
 
 @exporter.export
-@preprocess_and_wrap()
+@add_vertical_dim_from_xarray
+@preprocess_and_wrap(broadcast=('pressure', 'temperature', 'dewpoint'))
 @check_units('[pressure]', '[temperature]', '[temperature]')
-def k_index(pressure, temperature, dewpoint):
+def k_index(pressure, temperature, dewpoint, vertical_dim=0):
     """Calculate K Index from the pressure temperature and dewpoint.
 
     K Index formula derived from [George1960]_:
@@ -3964,6 +4073,10 @@ def k_index(pressure, temperature, dewpoint):
 
     dewpoint : `pint.Quantity`
         Dewpoint temperature corresponding to pressure
+
+    vertical_dim : int, optional
+        The axis corresponding to vertical, defaults to 0. Automatically determined from
+        xarray DataArray arguments.
 
     Returns
     -------
@@ -3994,10 +4107,10 @@ def k_index(pressure, temperature, dewpoint):
     <Quantity(35.9395759, 'degree_Celsius')>
 
     """
-    # Find temperature and dewpoint at 850, 700 and 500 hPa
-    (t850, t700, t500), (td850, td700, _) = interpolate_1d(units.Quantity([850, 700, 500],
-                                                           'hPa'), pressure, temperature,
-                                                           dewpoint)
+    # Find temperature and dewpoint at 850, 700, and 500 hPa
+    (t850, t700, t500), (td850, td700, _) = interpolate_1d(
+        units.Quantity([850, 700, 500], 'hPa'), pressure, temperature, dewpoint,
+        axis=vertical_dim)
 
     # Calculate k index.
     return ((t850 - t500) + td850 - (t700 - td700)).to(units.degC)
@@ -4108,14 +4221,14 @@ def showalter_index(pressure, temperature, dewpoint):
 
     Parameters
     ----------
-        pressure : `pint.Quantity`
-            Atmospheric pressure, in order from highest to lowest pressure
+    pressure : `pint.Quantity`
+        Atmospheric pressure, in order from highest to lowest pressure
 
-        temperature : `pint.Quantity`
-            Ambient temperature corresponding to ``pressure``
+    temperature : `pint.Quantity`
+        Ambient temperature corresponding to ``pressure``
 
-        dewpoint : `pint.Quantity`
-            Ambient dew point temperatures corresponding to ``pressure``
+    dewpoint : `pint.Quantity`
+        Ambient dew point temperatures corresponding to ``pressure``
 
     Returns
     -------
@@ -4161,9 +4274,10 @@ def showalter_index(pressure, temperature, dewpoint):
 
 
 @exporter.export
-@preprocess_and_wrap()
+@add_vertical_dim_from_xarray
+@preprocess_and_wrap(broadcast=('pressure', 'temperature', 'dewpoint'))
 @check_units('[pressure]', '[temperature]', '[temperature]')
-def total_totals_index(pressure, temperature, dewpoint):
+def total_totals_index(pressure, temperature, dewpoint, vertical_dim=0):
     """Calculate Total Totals Index from the pressure temperature and dewpoint.
 
     Total Totals Index formula derived from [Miller1972]_:
@@ -4190,6 +4304,10 @@ def total_totals_index(pressure, temperature, dewpoint):
 
     dewpoint : `pint.Quantity`
         Dewpoint temperature corresponding to pressure
+
+    vertical_dim : int, optional
+        The axis corresponding to vertical, defaults to 0. Automatically determined from
+        xarray DataArray arguments.
 
     Returns
     -------
@@ -4223,16 +4341,18 @@ def total_totals_index(pressure, temperature, dewpoint):
     """
     # Find temperature and dewpoint at 850 and 500 hPa.
     (t850, t500), (td850, _) = interpolate_1d(units.Quantity([850, 500], 'hPa'),
-                                              pressure, temperature, dewpoint)
+                                              pressure, temperature, dewpoint,
+                                              axis=vertical_dim)
 
     # Calculate total totals index.
     return (t850 - t500) + (td850 - t500)
 
 
 @exporter.export
-@preprocess_and_wrap()
+@add_vertical_dim_from_xarray
+@preprocess_and_wrap(broadcast=('pressure', 'temperature'))
 @check_units('[pressure]', '[temperature]')
-def vertical_totals(pressure, temperature):
+def vertical_totals(pressure, temperature, vertical_dim=0):
     """Calculate Vertical Totals from the pressure and temperature.
 
     Vertical Totals formula derived from [Miller1972]_:
@@ -4254,6 +4374,10 @@ def vertical_totals(pressure, temperature):
 
     temperature : `pint.Quantity`
         Temperature corresponding to pressure
+
+    vertical_dim : int, optional
+        The axis corresponding to vertical, defaults to 0. Automatically determined from
+        xarray DataArray arguments.
 
     Returns
     -------
@@ -4281,16 +4405,17 @@ def vertical_totals(pressure, temperature):
     """
     # Find temperature at 850 and 500 hPa.
     (t850, t500) = interpolate_1d(units.Quantity([850, 500], 'hPa'),
-                                  pressure, temperature)
+                                  pressure, temperature, axis=vertical_dim)
 
     # Calculate vertical totals.
     return t850 - t500
 
 
 @exporter.export
-@preprocess_and_wrap()
+@add_vertical_dim_from_xarray
+@preprocess_and_wrap(broadcast=('pressure', 'temperature', 'dewpoint'))
 @check_units('[pressure]', '[temperature]', '[temperature]')
-def cross_totals(pressure, temperature, dewpoint):
+def cross_totals(pressure, temperature, dewpoint, vertical_dim=0):
     """Calculate Cross Totals from the pressure temperature and dewpoint.
 
     Cross Totals formula derived from [Miller1972]_:
@@ -4315,6 +4440,10 @@ def cross_totals(pressure, temperature, dewpoint):
 
     dewpoint : `pint.Quantity`
         Dewpoint temperature corresponding to pressure
+
+    vertical_dim : int, optional
+        The axis corresponding to vertical, defaults to 0. Automatically determined from
+        xarray DataArray arguments.
 
     Returns
     -------
@@ -4348,16 +4477,17 @@ def cross_totals(pressure, temperature, dewpoint):
     """
     # Find temperature and dewpoint at 850 and 500 hPa
     (_, t500), (td850, _) = interpolate_1d(units.Quantity([850, 500], 'hPa'),
-                                           pressure, temperature, dewpoint)
+                                           pressure, temperature, dewpoint, axis=vertical_dim)
 
     # Calculate vertical totals.
     return td850 - t500
 
 
 @exporter.export
-@preprocess_and_wrap()
+@add_vertical_dim_from_xarray
+@preprocess_and_wrap(broadcast=('pressure', 'temperature', 'dewpoint', 'speed', 'direction'))
 @check_units('[pressure]', '[temperature]', '[temperature]', '[speed]')
-def sweat_index(pressure, temperature, dewpoint, speed, direction):
+def sweat_index(pressure, temperature, dewpoint, speed, direction, vertical_dim=0):
     """Calculate SWEAT Index.
 
     SWEAT Index derived from [Miller1972]_:
@@ -4402,6 +4532,10 @@ def sweat_index(pressure, temperature, dewpoint, speed, direction):
     direction : `pint.Quantity`
         Wind direction corresponding to pressure
 
+    vertical_dim : int, optional
+        The axis corresponding to vertical, defaults to 0. Automatically determined from
+        xarray DataArray arguments.
+
     Returns
     -------
     `pint.Quantity`
@@ -4409,15 +4543,15 @@ def sweat_index(pressure, temperature, dewpoint, speed, direction):
 
     """
     # Find dewpoint at 850 hPa.
-    td850 = interpolate_1d(units.Quantity(850, 'hPa'), pressure, dewpoint)
+    td850 = interpolate_1d(units.Quantity(850, 'hPa'), pressure, dewpoint, axis=vertical_dim)
 
     # Find total totals index.
-    tt = total_totals_index(pressure, temperature, dewpoint)
+    tt = total_totals_index(pressure, temperature, dewpoint, vertical_dim=vertical_dim)
 
     # Find wind speed and direction at 850 and 500 hPa
-    (f850, f500), (dd850, dd500) = interpolate_1d(units.Quantity([850, 500],
-                                                  'hPa'), pressure, speed,
-                                                  direction)
+    (f850, f500), (dd850, dd500) = interpolate_1d(units.Quantity([850, 500], 'hPa'),
+                                                  pressure, speed, direction,
+                                                  axis=vertical_dim)
 
     # First term is set to zero if Td850 is negative
     first_term = 12 * np.clip(td850.m_as('degC'), 0, None)
