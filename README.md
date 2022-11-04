@@ -23,6 +23,8 @@ MetPy
 MetPy is a collection of tools in Python for reading, visualizing and
 performing calculations with weather data.
 
+Here is my edit.
+
 MetPy follows [semantic versioning](https://semver.org) in its version number. This means
 that any MetPy ``1.x`` release will be backwards compatible with an earlier ``1.y`` release. By
 "backward compatible", we mean that **correct** code that works on a ``1.y`` version will work
